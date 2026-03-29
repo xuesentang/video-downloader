@@ -1,7 +1,12 @@
 <template>
   <div class="min-h-screen flex flex-col bg-bg-main">
     <!-- 顶部导航 -->
-    <AppHeader @login="showLogin" @register="showRegister" />
+    <AppHeader 
+      @login="showLogin" 
+      @register="showRegister"
+      @open-proxy="showProxySettings = true"
+      :proxy-configured="proxyConfigured"
+    />
     
     <main class="flex-1">
       <!-- Hero 区域 -->
@@ -36,6 +41,18 @@
     <!-- 页脚 -->
     <AppFooter />
 
+    <!-- 代理设置弹窗 -->
+    <div 
+      v-if="showProxySettings"
+      class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      @click.self="showProxySettings = false"
+    >
+      <ProxySettings 
+        @close="showProxySettings = false"
+        @update="handleProxyUpdate"
+      />
+    </div>
+
     <!-- 提示消息 -->
     <div 
       v-if="toast.visible"
@@ -56,14 +73,16 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import AppHeader from './components/AppHeader.vue'
 import HeroSection from './components/HeroSection.vue'
 import VideoResult from './components/VideoResult.vue'
 import FeatureSection from './components/FeatureSection.vue'
 import PlatformSection from './components/PlatformSection.vue'
 import AppFooter from './components/AppFooter.vue'
+import ProxySettings from './components/ProxySettings.vue'
 import { parseVideo, downloadViaServer, getDirectUrl } from './api/video.js'
+import { getProxyConfig } from './api/proxy.js'
 
 /**
  * 主应用组件
@@ -72,6 +91,7 @@ import { parseVideo, downloadViaServer, getDirectUrl } from './api/video.js'
  *   - 整合所有子组件
  *   - 管理全局状态（视频数据、加载状态等）
  *   - 处理视频解析和下载逻辑
+ *   - 管理代理配置
  */
 
 // 状态
@@ -79,10 +99,24 @@ const loading = ref(false)
 const downloading = ref(false)
 const videoData = ref(null)
 const currentUrl = ref('')
+const showProxySettings = ref(false)
+const proxyConfigured = ref(false)
 const toast = ref({
   visible: false,
   type: 'success',
   message: ''
+})
+
+// 加载代理配置状态
+onMounted(async () => {
+  try {
+    const res = await getProxyConfig()
+    if (res.success) {
+      proxyConfigured.value = !!res.data.active_proxy
+    }
+  } catch (err) {
+    console.error('加载代理配置失败:', err)
+  }
 })
 
 /**
@@ -100,6 +134,18 @@ function showToast(message, type = 'success') {
 }
 
 /**
+ * 处理代理配置更新
+ */
+function handleProxyUpdate(proxy) {
+  proxyConfigured.value = !!proxy
+  if (proxy) {
+    showToast('代理配置已更新')
+  } else {
+    showToast('代理配置已清除')
+  }
+}
+
+/**
  * 处理视频解析
  */
 async function handleParse(url) {
@@ -113,10 +159,23 @@ async function handleParse(url) {
       videoData.value = res.data
       showToast('视频解析成功！')
     } else {
-      showToast(res.error || '解析失败', 'error')
+      // 检查是否需要代理
+      if (res.requires_proxy) {
+        showToast(`${res.error}，请配置代理`, 'error')
+        showProxySettings.value = true
+      } else {
+        showToast(res.error || '解析失败', 'error')
+      }
     }
   } catch (err) {
-    showToast(err.message || '解析失败，请检查链接是否正确', 'error')
+    const errorMsg = err.message || '解析失败，请检查链接是否正确'
+    // 检查是否是 YouTube 相关错误
+    if (errorMsg.includes('YouTube') || errorMsg.includes('代理')) {
+      showToast(`${errorMsg}，请配置代理`, 'error')
+      showProxySettings.value = true
+    } else {
+      showToast(errorMsg, 'error')
+    }
   } finally {
     loading.value = false
   }
@@ -179,7 +238,14 @@ async function handleDownload(formatId) {
     
     showToast('下载完成！')
   } catch (err) {
-    showToast(err.message || '下载失败', 'error')
+    const errorMsg = err.message || '下载失败'
+    // 检查是否是 YouTube 相关错误
+    if (errorMsg.includes('YouTube') || errorMsg.includes('代理')) {
+      showToast(`${errorMsg}，请配置代理`, 'error')
+      showProxySettings.value = true
+    } else {
+      showToast(errorMsg, 'error')
+    }
   } finally {
     downloading.value = false
   }

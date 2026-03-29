@@ -1,12 +1,14 @@
 # 万能视频下载器
 
-一个支持多平台的视频下载工具，基于 yt-dlp 和专用解析器实现，支持抖音、B站等主流视频平台。
+一个支持多平台的视频下载工具，基于 yt-dlp 和专用解析器实现，支持抖音、B站、YouTube 等主流视频平台。
 
 ## 功能特性
 
 - **多平台支持**：支持 1800+ 视频平台（通过 yt-dlp）
 - **抖音无水印下载**：专用解析器，无需 Cookie，自动获取无水印视频
 - **B站视频下载**：支持 DASH 格式，自动合并音视频
+- **YouTube 视频下载**：支持代理配置，服务端代理下载
+- **代理配置管理**：支持 HTTP/HTTPS/SOCKS5 代理，自动检测常见代理工具
 - **Web 界面**：基于 Vue3 + Tailwind CSS 的现代化前端
 - **REST API**：FastAPI 提供完整的 API 接口
 
@@ -70,13 +72,33 @@ format_spec = f"{format_id}+bestaudio/best"
 "merge_output_format": "mp4"
 ```
 
-### 3. 平台适配策略
+### 3. YouTube 视频下载
 
-| 平台 | 解析方式 | 下载方式 | 特殊处理 |
-|------|---------|---------|---------|
-| 抖音 | 专用解析器 | 直链下载 | 无水印处理 |
-| B站 | yt-dlp | 服务端代理 | 音视频合并 |
-| 其他 | yt-dlp | 直链/代理 | 自动适配 |
+**技术方案**：
+- 代理配置支持（HTTP/HTTPS/SOCKS5）
+- 自动检测常见代理工具（Clash、v2rayN、Shadowsocks）
+- 服务端代理下载（绕过防盗链）
+
+**关键实现**：
+```python
+# 强制 YouTube 使用服务端代理下载
+if is_youtube_url(req.url):
+    return {
+        "proxy_download": True,
+        "message": "YouTube 视频需要通过服务端代理下载"
+    }
+```
+
+### 4. 平台适配策略
+
+| 平台 | 解析方式 | 下载方式 | 特殊处理 | 代理需求 |
+|------|---------|---------|---------|---------|
+| 抖音 | 专用解析器 | 直链下载 | 无水印处理 | 无需代理 |
+| B站 | yt-dlp | 服务端代理 | 音视频合并 | 无需代理 |
+| YouTube | yt-dlp | 服务端代理 | 防盗链处理 | **需要代理** |
+| TikTok | yt-dlp | 服务端代理 | - | **需要代理** |
+| Twitter/X | yt-dlp | 服务端代理 | - | **需要代理** |
+| Instagram | yt-dlp | 服务端代理 | - | **需要代理** |
 
 ## 安装运行
 
@@ -84,6 +106,7 @@ format_spec = f"{format_id}+bestaudio/best"
 - Python 3.8+
 - Node.js 16+
 - FFmpeg
+- 代理工具（Clash/v2rayN/Shadowsocks 等，用于下载 YouTube 等境外平台）
 
 ### 后端启动
 
@@ -105,6 +128,36 @@ npm run dev
 
 访问 http://localhost:5173
 
+## 代理配置
+
+### 支持的平台
+
+以下平台在中国大陆无法直接访问，需要配置代理：
+- YouTube
+- TikTok
+- Twitter/X
+- Instagram
+
+### 配置方法
+
+1. 打开前端页面，点击顶部导航栏的"代理设置"按钮
+2. 输入代理地址（支持 HTTP/HTTPS/SOCKS5）
+3. 点击"测试连接"验证代理可用
+4. 保存配置
+
+### 常见代理配置
+
+| 工具 | HTTP 代理 | SOCKS5 代理 |
+|------|----------|-------------|
+| Clash | `http://127.0.0.1:7890` | - |
+| Clash Verge | `http://127.0.0.1:7897` | - |
+| v2rayN | `http://127.0.0.1:10809` | `socks5://127.0.0.1:10808` |
+| Shadowsocks | - | `socks5://127.0.0.1:1080` |
+
+### 自动检测
+
+点击"自动检测常见代理"按钮，系统会自动检测上述常见代理配置。
+
 ## API 接口
 
 ### 解析视频
@@ -113,7 +166,7 @@ POST /api/parse
 Content-Type: application/json
 
 {
-  "url": "https://www.bilibili.com/video/xxx"
+  "url": "https://www.youtube.com/watch?v=xxx"
 }
 ```
 
@@ -123,8 +176,8 @@ POST /api/download
 Content-Type: application/json
 
 {
-  "url": "https://www.bilibili.com/video/xxx",
-  "format_id": "30080"
+  "url": "https://www.youtube.com/watch?v=xxx",
+  "format_id": "bestvideo+bestaudio/best"
 }
 ```
 
@@ -136,6 +189,41 @@ Content-Type: application/json
 {
   "url": "https://v.douyin.com/xxx"
 }
+```
+
+### 代理配置 API
+
+#### 获取代理配置
+```http
+GET /api/config/proxy
+```
+
+#### 设置代理配置
+```http
+POST /api/config/proxy
+Content-Type: application/json
+
+{
+  "http_proxy": "http://127.0.0.1:7890",
+  "https_proxy": "http://127.0.0.1:7890",
+  "socks_proxy": "socks5://127.0.0.1:10808"
+}
+```
+
+#### 测试代理连接
+```http
+POST /api/config/proxy/test
+Content-Type: application/json
+
+{
+  "proxy": "http://127.0.0.1:7890",
+  "test_url": "https://www.google.com"
+}
+```
+
+#### 获取支持的平台列表
+```http
+GET /api/platforms
 ```
 
 ## 开发历程
@@ -151,6 +239,12 @@ Content-Type: application/json
 - [x] B站音视频合并修复
 - [x] 防盗链处理
 
+### 阶段三：YouTube 支持
+- [x] 代理配置管理
+- [x] 自动检测常见代理工具
+- [x] 服务端代理下载
+- [x] 代理连接测试
+
 ### 关键技术问题及解决方案
 
 **问题1**：抖音视频需要 Cookie
@@ -161,6 +255,12 @@ Content-Type: application/json
 
 **问题3**：B站直链 403
 - **方案**：服务端代理下载
+
+**问题4**：YouTube 无法访问
+- **方案**：代理配置支持 + 服务端代理下载
+
+**问题5**：YouTube 直链防盗链
+- **方案**：强制使用服务端代理下载
 
 ## 许可证
 

@@ -7,6 +7,7 @@ import os
 import asyncio
 from contextlib import asynccontextmanager
 from urllib.parse import unquote
+from typing import Optional
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -21,11 +22,33 @@ from downloader import VideoDownloader
 from douyin import DouyinParser, is_douyin_url
 
 
-# 初始化下载器实例
+# 全局代理配置存储
+proxy_config = {
+    "http_proxy": None,
+    "https_proxy": None,
+    "socks_proxy": None,
+}
+
+# 初始化下载器实例（初始无代理）
 downloader = VideoDownloader()
 
 # 初始化抖音解析器（无需 cookies，开箱即用）
 douyin_parser = DouyinParser()
+
+
+def update_downloader_proxy():
+    """根据配置更新下载器代理"""
+    # 优先使用 SOCKS5 代理，其次 HTTP 代理
+    proxy = None
+    if proxy_config.get("socks_proxy"):
+        proxy = proxy_config["socks_proxy"]
+    elif proxy_config.get("https_proxy"):
+        proxy = proxy_config["https_proxy"]
+    elif proxy_config.get("http_proxy"):
+        proxy = proxy_config["http_proxy"]
+    
+    downloader.set_proxy(proxy)
+    return proxy
 
 
 @asynccontextmanager
@@ -38,6 +61,15 @@ async def lifespan(app: FastAPI):
     """
     # 启动时执行
     print("🚀 万能视频下载器服务启动中...")
+    
+    # 从环境变量加载代理配置
+    proxy_config["http_proxy"] = os.getenv("HTTP_PROXY")
+    proxy_config["https_proxy"] = os.getenv("HTTPS_PROXY")
+    proxy_config["socks_proxy"] = os.getenv("SOCKS_PROXY")
+    
+    if update_downloader_proxy():
+        print(f"🌐 已加载代理配置: {downloader.proxy}")
+    
     yield
     # 关闭时执行
     print("🧹 清理临时文件...")
@@ -105,6 +137,51 @@ class DirectUrlRequest(BaseModel):
     format_id: str = "best"
 
 
+class ProxyConfigRequest(BaseModel):
+    """
+    代理配置请求模型
+    
+    Attributes:
+        http_proxy: HTTP 代理地址，如 "http://127.0.0.1:7890"
+        https_proxy: HTTPS 代理地址，如 "http://127.0.0.1:7890"
+        socks_proxy: SOCKS5 代理地址，如 "socks5://127.0.0.1:10808"
+    """
+    http_proxy: Optional[str] = None
+    https_proxy: Optional[str] = None
+    socks_proxy: Optional[str] = None
+
+
+class ProxyTestRequest(BaseModel):
+    """
+    代理测试请求模型
+    
+    Attributes:
+        proxy: 要测试的代理地址
+        test_url: 测试目标 URL，默认 https://www.google.com
+    """
+    proxy: str
+    test_url: str = "https://www.google.com"
+
+
+# ==================== 工具函数 ====================
+
+def is_bilibili_url(url: str) -> bool:
+    """判断是否为B站链接"""
+    return "bilibili.com" in url.lower() or "b23.tv" in url.lower()
+
+
+def is_youtube_url(url: str) -> bool:
+    """判断是否为 YouTube 链接"""
+    patterns = ['youtube.com', 'youtu.be', 'youtube-nocookie.com']
+    url_lower = url.lower()
+    return any(p in url_lower for p in patterns)
+
+
+def requires_proxy(url: str) -> bool:
+    """判断该 URL 是否需要代理才能访问"""
+    return is_youtube_url(url)
+
+
 # ==================== API 路由 ====================
 
 @app.get("/api/health")
@@ -118,7 +195,163 @@ async def health_check():
     return {
         "status": "ok",
         "message": "万能视频下载器服务运行中",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "proxy_configured": downloader.proxy is not None
+    }
+
+
+@app.get("/api/config/proxy")
+async def get_proxy_config():
+    """
+    获取当前代理配置
+    
+    Returns:
+        代理配置信息（不包含密码等敏感信息）
+    """
+    return {
+        "success": True,
+        "data": {
+            "http_proxy": proxy_config["http_proxy"],
+            "https_proxy": proxy_config["https_proxy"],
+            "socks_proxy": proxy_config["socks_proxy"],
+            "active_proxy": downloader.proxy,
+        }
+    }
+
+
+@app.post("/api/config/proxy")
+async def set_proxy_config(req: ProxyConfigRequest):
+    """
+    设置代理配置
+    
+    Args:
+        req: 代理配置请求
+        
+    Returns:
+        设置结果
+    """
+    try:
+        proxy_config["http_proxy"] = req.http_proxy
+        proxy_config["https_proxy"] = req.https_proxy
+        proxy_config["socks_proxy"] = req.socks_proxy
+        
+        # 更新下载器代理
+        active_proxy = update_downloader_proxy()
+        
+        return {
+            "success": True,
+            "message": "代理配置已更新",
+            "data": {
+                "active_proxy": active_proxy
+            }
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "error": f"代理配置失败: {str(e)}"
+            }
+        )
+
+
+@app.delete("/api/config/proxy")
+async def clear_proxy_config():
+    """
+    清除代理配置
+    
+    Returns:
+        清除结果
+    """
+    proxy_config["http_proxy"] = None
+    proxy_config["https_proxy"] = None
+    proxy_config["socks_proxy"] = None
+    downloader.clear_proxy()
+    
+    return {
+        "success": True,
+        "message": "代理配置已清除"
+    }
+
+
+@app.post("/api/config/proxy/test")
+async def test_proxy_connection(req: ProxyTestRequest):
+    """
+    测试代理连接
+    
+    Args:
+        req: 代理测试请求
+        
+    Returns:
+        测试结果
+    """
+    try:
+        import aiohttp
+        
+        timeout = aiohttp.ClientTimeout(total=10)
+        
+        # 配置代理
+        connector = None
+        if req.proxy.startswith("socks5://"):
+            # SOCKS5 代理需要额外安装 aiohttp-socks
+            try:
+                from aiohttp_socks import ProxyConnector
+                connector = ProxyConnector.from_url(req.proxy)
+            except ImportError:
+                return {
+                    "success": False,
+                    "error": "测试 SOCKS5 代理需要安装 aiohttp-socks: pip install aiohttp-socks"
+                }
+        
+        # connector 应该传给 ClientSession 构造函数
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            async with session.get(
+                req.test_url,
+                proxy=req.proxy if not connector else None,
+                ssl=False  # 某些代理可能需要禁用 SSL 验证
+            ) as response:
+                if response.status == 200:
+                    return {
+                        "success": True,
+                        "message": f"代理连接成功，目标 {req.test_url} 可访问",
+                        "status_code": response.status
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"代理连接失败，HTTP 状态码: {response.status}",
+                        "status_code": response.status
+                    }
+                    
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"代理测试失败: {str(e)}"
+        }
+
+
+@app.get("/api/platforms")
+async def get_platforms():
+    """
+    获取支持的平台列表及代理需求
+    
+    Returns:
+        平台列表
+    """
+    return {
+        "success": True,
+        "data": {
+            "platforms": [
+                {"name": "抖音", "id": "douyin", "requires_proxy": False, "status": "专用解析器"},
+                {"name": "B站", "id": "bilibili", "requires_proxy": False, "status": "支持"},
+                {"name": "YouTube", "id": "youtube", "requires_proxy": True, "status": "需要代理"},
+                {"name": "TikTok", "id": "tiktok", "requires_proxy": True, "status": "需要代理"},
+                {"name": "Twitter/X", "id": "twitter", "requires_proxy": True, "status": "需要代理"},
+                {"name": "Instagram", "id": "instagram", "requires_proxy": True, "status": "需要代理"},
+                {"name": "其他", "id": "others", "requires_proxy": False, "status": "yt-dlp 支持"},
+            ],
+            "proxy_configured": downloader.proxy is not None
+        }
     }
 
 
@@ -141,6 +374,18 @@ async def parse_video_endpoint(req: ParseRequest):
         HTTPException: 解析失败时返回 400 错误
     """
     try:
+        # 检查是否需要代理
+        if requires_proxy(req.url) and not downloader.proxy:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "success": False,
+                    "error": "该视频需要代理才能访问，请先配置代理",
+                    "requires_proxy": True,
+                    "platform": "youtube"
+                }
+            )
+        
         # 判断是否为抖音链接，使用专门的解析器
         if is_douyin_url(req.url):
             # 抖音解析器是异步的，直接 await
@@ -155,12 +400,29 @@ async def parse_video_endpoint(req: ParseRequest):
             "data": result
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
+        error_msg = str(e)
+        
+        # 检测特定的网络错误
+        if "getaddrinfo failed" in error_msg or "Name or service not known" in error_msg:
+            if is_youtube_url(req.url):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "success": False,
+                        "error": "无法连接到 YouTube，请配置代理后重试",
+                        "requires_proxy": True,
+                        "platform": "youtube"
+                    }
+                )
+        
         raise HTTPException(
             status_code=400,
             detail={
                 "success": False,
-                "error": f"解析失败: {str(e)}"
+                "error": f"解析失败: {error_msg}"
             }
         )
 
@@ -184,6 +446,18 @@ async def download_video_endpoint(req: DownloadRequest):
         HTTPException: 下载失败时返回 400/500 错误
     """
     try:
+        # 检查是否需要代理
+        if requires_proxy(req.url) and not downloader.proxy:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "success": False,
+                    "error": "该视频需要代理才能下载，请先配置代理",
+                    "requires_proxy": True,
+                    "platform": "youtube"
+                }
+            )
+        
         # 抖音链接使用 aiohttp 直接下载
         if is_douyin_url(req.url):
             # 1. 解析获取无水印直链
@@ -246,7 +520,7 @@ async def download_video_endpoint(req: DownloadRequest):
                 media_type="video/mp4",
             )
         
-        # 其他平台使用 yt-dlp
+        # 其他平台使用 yt-dlp（包括 YouTube）
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None, downloader.download_video, req.url, req.format_id
@@ -271,18 +545,28 @@ async def download_video_endpoint(req: DownloadRequest):
     except HTTPException:
         raise
     except Exception as e:
+        error_msg = str(e)
+        
+        # 检测特定的网络错误
+        if "getaddrinfo failed" in error_msg or "Name or service not known" in error_msg:
+            if is_youtube_url(req.url):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "success": False,
+                        "error": "无法连接到 YouTube，请配置代理后重试",
+                        "requires_proxy": True,
+                        "platform": "youtube"
+                    }
+                )
+        
         raise HTTPException(
             status_code=400,
             detail={
                 "success": False,
-                "error": f"下载失败: {str(e)}"
+                "error": f"下载失败: {error_msg}"
             }
         )
-
-
-def is_bilibili_url(url: str) -> bool:
-    """判断是否为B站链接"""
-    return "bilibili.com" in url.lower() or "b23.tv" in url.lower()
 
 
 @app.post("/api/direct-url")
@@ -304,6 +588,32 @@ async def get_direct_url_endpoint(req: DirectUrlRequest):
         HTTPException: 获取失败时返回 400 错误
     """
     try:
+        # YouTube 视频强制使用服务端代理下载（防盗链）
+        if is_youtube_url(req.url):
+            return {
+                "success": True,
+                "data": {
+                    "url": "",
+                    "title": "",
+                    "ext": "mp4",
+                    "proxy_download": True,
+                    "message": "YouTube 视频需要通过服务端代理下载"
+                }
+            }
+        
+        # 检查是否需要代理
+        if requires_proxy(req.url) and not downloader.proxy:
+            return {
+                "success": True,
+                "data": {
+                    "url": "",
+                    "title": "",
+                    "ext": "mp4",
+                    "proxy_download": True,
+                    "message": "该视频需要代理才能获取直链，请配置代理或使用服务端下载"
+                }
+            }
+        
         # 抖音链接使用专用解析器获取无水印直链
         if is_douyin_url(req.url):
             result = await douyin_parser.parse(req.url)
@@ -343,11 +653,26 @@ async def get_direct_url_endpoint(req: DirectUrlRequest):
         }
         
     except Exception as e:
+        error_msg = str(e)
+        
+        # 检测特定的网络错误
+        if "getaddrinfo failed" in error_msg or "Name or service not known" in error_msg:
+            if is_youtube_url(req.url):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "success": False,
+                        "error": "无法连接到 YouTube，请配置代理后重试",
+                        "requires_proxy": True,
+                        "platform": "youtube"
+                    }
+                )
+        
         raise HTTPException(
             status_code=400,
             detail={
                 "success": False,
-                "error": f"获取直链失败: {str(e)}"
+                "error": f"获取直链失败: {error_msg}"
             }
         )
 

@@ -17,21 +17,25 @@ class VideoDownloader:
         - 解析视频信息（标题、缩略图、格式等）
         - 下载视频到本地
         - 获取视频直链
+        - 支持代理配置（用于 YouTube 等被墙网站）
     
     入参:
         download_dir: 下载文件保存目录，默认为当前目录下的 downloads 文件夹
+        proxy: 代理服务器地址，如 "socks5://127.0.0.1:10808" 或 "http://127.0.0.1:7890"
     
     注意事项:
         - 需要安装 yt-dlp: pip install yt-dlp
         - 某些平台可能需要配置 cookies 才能下载高清视频
+        - YouTube 等平台需要代理才能访问
     """
     
-    def __init__(self, download_dir: str = None):
+    def __init__(self, download_dir: str = None, proxy: str = None):
         """
         初始化下载器
         
         Args:
             download_dir: 下载目录路径，默认为 backend/downloads
+            proxy: 代理服务器地址
         """
         if download_dir is None:
             # 获取当前文件所在目录的绝对路径
@@ -39,6 +43,7 @@ class VideoDownloader:
             download_dir = os.path.join(current_dir, "downloads")
         
         self.DOWNLOAD_DIR = download_dir
+        self.proxy = proxy
         # 确保下载目录存在
         os.makedirs(self.DOWNLOAD_DIR, exist_ok=True)
     
@@ -57,7 +62,25 @@ class VideoDownloader:
             "no_warnings": True,
             "extract_flat": extract_flat,
         }
+        
+        # 添加代理配置
+        if self.proxy:
+            opts["proxy"] = self.proxy
+        
         return opts
+    
+    def set_proxy(self, proxy: str):
+        """
+        设置代理服务器
+        
+        Args:
+            proxy: 代理服务器地址，如 "socks5://127.0.0.1:10808"
+        """
+        self.proxy = proxy
+    
+    def clear_proxy(self):
+        """清除代理配置"""
+        self.proxy = None
     
     def _format_filesize(self, size: int) -> str:
         """
@@ -265,6 +288,10 @@ class VideoDownloader:
                 }],
             }
             
+            # 添加代理配置
+            if self.proxy:
+                ydl_opts["proxy"] = self.proxy
+            
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
@@ -311,6 +338,10 @@ class VideoDownloader:
                 "quiet": True,
                 "no_warnings": True,
             }
+            
+            # 添加代理配置
+            if self.proxy:
+                ydl_opts["proxy"] = self.proxy
             
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
