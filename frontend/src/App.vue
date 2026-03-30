@@ -152,18 +152,11 @@ async function restoreUser() {
 }
 
 // ===== VIP 购买 =====
+// [FREE_VERSION] 免费版：禁用购买流程
 async function handleOpenVip() {
-  if (!isLoggedIn()) {
-    showAuthModal('login')
-    return
-  }
-  try {
-    const { checkout_url } = await createCheckoutSession('monthly')
-    window.location.href = checkout_url
-  } catch (err) {
-    const msg = err.response?.data?.detail || err.message || '创建支付失败'
-    alert(typeof msg === 'string' ? msg : JSON.stringify(msg))
-  }
+  // [FREE_VERSION] 免费版：无需购买，提示已解锁
+  alert('当前为免费版，所有功能已解锁！')
+  return
 }
 
 // ===== 支付结果处理 =====

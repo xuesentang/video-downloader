@@ -19,26 +19,44 @@ import requests
 
 logger = logging.getLogger("douyin")
 
+# 2025年最新Chrome浏览器请求头
 DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
+        "Chrome/134.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/json,*/*",
-    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
     "Referer": "https://www.douyin.com/",
+    "Sec-Ch-Ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control": "max-age=0",
 }
 
+# 移动端请求头（用于分享页解析）
 MOBILE_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
         "Mobile/15E148 Safari/604.1"
     ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
     "Referer": "https://www.douyin.com/",
+    "Sec-Ch-Ua": '"Safari";v="17", "Not:A-Brand";v="8", "Apple WebKit";v="605"',
+    "Sec-Ch-Ua-Mobile": "?1",
+    "Sec-Ch-Ua-Platform": '"iOS"',
 }
 
 _URL_PATTERN = re.compile(r"https?://[^\s]+", re.IGNORECASE)
@@ -114,19 +132,42 @@ class DouyinParser:
         return candidate.rstrip(").,;!?")
 
     def _resolve_redirect(self, share_url: str) -> str:
-        """解析短链接重定向"""
+        """解析短链接重定向，使用移动端请求头"""
+        # 短链接解析使用移动端请求头，成功率更高
+        headers = {
+            **MOBILE_HEADERS,
+            "Referer": "",
+        }
         for attempt in range(self.max_retries):
             try:
+                # 先访问短链接获取重定向
                 resp = self.session.get(
-                    share_url, timeout=self.timeout,
-                    allow_redirects=True, headers=DEFAULT_HEADERS,
+                    share_url,
+                    headers=headers,
+                    timeout=self.timeout,
+                    allow_redirects=True,
                 )
                 resp.raise_for_status()
+
+                # 检查是否遇到WAF
+                if "Please wait..." in resp.text or "wci=" in resp.text:
+                    logger.warning("短链接解析遇到WAF，尝试绕过...")
+                    html = self._solve_waf_and_retry(resp.text, resp.url)
+                    # 如果WAF解决成功，重新请求
+                    if html != resp.text:
+                        resp = self.session.get(
+                            share_url,
+                            headers=headers,
+                            timeout=self.timeout,
+                            allow_redirects=True,
+                        )
+
                 return resp.url
             except requests.RequestException as e:
+                logger.warning(f"链接解析尝试 {attempt + 1} 失败: {e}")
                 if attempt == self.max_retries - 1:
                     raise ValueError(f"链接解析失败: {e}")
-                time.sleep(1 * (2 ** attempt))
+                time.sleep(0.5 * (2 ** attempt))
         raise ValueError("链接解析失败")
 
     def _extract_video_id(self, url: str) -> str:
@@ -161,11 +202,24 @@ class DouyinParser:
             return self._fetch_via_share_page(video_id, resolved_url)
 
     def _fetch_via_api(self, video_id: str) -> dict:
+        """通过公开API获取视频信息，带完整请求头"""
         params = {"item_ids": video_id}
+        # 使用完整的浏览器请求头
+        headers = {
+            **DEFAULT_HEADERS,
+            "Referer": f"https://www.douyin.com/video/{video_id}",
+        }
         for attempt in range(self.max_retries):
             try:
+                # 每次请求前随机延迟，模拟真实用户
+                if attempt > 0:
+                    time.sleep(0.5 * (2 ** attempt))
+
                 resp = self.session.get(
-                    self.API_URL, params=params, timeout=self.timeout,
+                    self.API_URL,
+                    params=params,
+                    headers=headers,
+                    timeout=self.timeout,
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -174,9 +228,9 @@ class DouyinParser:
                     return items[0]
                 raise ValueError("API 返回空数据")
             except Exception as e:
+                logger.warning(f"API请求尝试 {attempt + 1} 失败: {e}")
                 if attempt == self.max_retries - 1:
                     raise
-                time.sleep(1 * (2 ** attempt))
         raise ValueError("API 请求失败")
 
     def _fetch_via_share_page(self, video_id: str, resolved_url: str) -> dict:
@@ -187,29 +241,59 @@ class DouyinParser:
         else:
             share_url = f"https://www.iesdouyin.com/share/video/{video_id}/"
 
-        resp = self.session.get(share_url, headers=MOBILE_HEADERS, timeout=self.timeout)
-        resp.raise_for_status()
-        html = resp.text or ""
+        # 使用移动端请求头访问分享页
+        headers = {
+            **MOBILE_HEADERS,
+            "Referer": "https://www.douyin.com/",
+        }
 
-        if "Please wait..." in html and "wci=" in html and "cs=" in html:
-            html = self._solve_waf_and_retry(html, share_url)
+        for attempt in range(self.max_retries):
+            try:
+                if attempt > 0:
+                    time.sleep(0.5 * (2 ** attempt))
 
-        router_data = self._extract_router_data(html)
-        if not router_data:
-            raise ValueError("无法从分享页提取数据")
+                resp = self.session.get(share_url, headers=headers, timeout=self.timeout)
+                resp.raise_for_status()
+                html = resp.text or ""
 
-        loader_data = router_data.get("loaderData", {})
-        for node in loader_data.values():
-            if not isinstance(node, dict):
-                continue
-            video_info_res = node.get("videoInfoRes", {})
-            if not isinstance(video_info_res, dict):
-                continue
-            item_list = video_info_res.get("item_list", [])
-            if item_list and isinstance(item_list[0], dict):
-                return item_list[0]
+                # 检查是否遇到WAF验证
+                if "Please wait..." in html and "wci=" in html and "cs=" in html:
+                    logger.info("遇到WAF验证，尝试自动解决...")
+                    html = self._solve_waf_and_retry(html, share_url)
+                    if "Please wait..." in html:
+                        logger.warning("WAF验证未能自动解决")
+                        if attempt == self.max_retries - 1:
+                            raise ValueError("WAF验证失败，请稍后重试")
+                        continue
 
-        raise ValueError("分享页中未找到视频信息")
+                router_data = self._extract_router_data(html)
+                if not router_data:
+                    logger.warning("无法从分享页提取数据，可能页面结构已变更")
+                    if attempt == self.max_retries - 1:
+                        raise ValueError("无法从分享页提取数据")
+                    continue
+
+                loader_data = router_data.get("loaderData", {})
+                for node in loader_data.values():
+                    if not isinstance(node, dict):
+                        continue
+                    video_info_res = node.get("videoInfoRes", {})
+                    if not isinstance(video_info_res, dict):
+                        continue
+                    item_list = video_info_res.get("item_list", [])
+                    if item_list and isinstance(item_list[0], dict):
+                        return item_list[0]
+
+                logger.warning("分享页中未找到视频信息")
+                if attempt == self.max_retries - 1:
+                    raise ValueError("分享页中未找到视频信息")
+
+            except Exception as e:
+                logger.warning(f"分享页解析尝试 {attempt + 1} 失败: {e}")
+                if attempt == self.max_retries - 1:
+                    raise
+
+        raise ValueError("分享页解析失败")
 
     def _solve_waf_and_retry(self, html: str, page_url: str) -> str:
         """解决抖音 WAF 反爬验证"""

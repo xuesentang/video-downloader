@@ -27,21 +27,12 @@ class LoginRequest(BaseModel):
 
 
 def _build_user_response(user: dict) -> dict:
-    is_vip = False
-    vip_expire_at = None
-    if user.get("is_vip") and user.get("vip_expire_at"):
-        try:
-            expire = datetime.fromisoformat(user["vip_expire_at"])
-            is_vip = expire > datetime.now(timezone.utc)
-            vip_expire_at = user["vip_expire_at"]
-        except ValueError:
-            pass
-
+    # [FREE_VERSION] 免费版：所有用户都是VIP
     return {
         "id": user["id"],
         "email": user["email"],
-        "is_vip": is_vip,
-        "vip_expire_at": vip_expire_at,
+        "is_vip": True,  # [FREE_VERSION] 强制为True
+        "vip_expire_at": "2099-12-31T23:59:59+00:00",  # [FREE_VERSION] 设置一个远期时间
     }
 
 

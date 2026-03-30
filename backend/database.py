@@ -93,35 +93,11 @@ def create_user(email: str, password_hash: str) -> dict:
 def check_and_increment_summary(user_id: int) -> tuple[bool, int]:
     """
     检查用户是否可以使用 AI 总结，并自增计数。
+    [FREE_VERSION] 免费版：所有用户无限制使用
     返回 (allowed, remaining_count)
     """
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    with get_db() as conn:
-        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not user:
-            return False, 0
-
-        if user["is_vip"] and user["vip_expire_at"]:
-            expire = datetime.fromisoformat(user["vip_expire_at"])
-            if expire > datetime.now(timezone.utc):
-                return True, -1  # -1 means unlimited
-
-        if user["last_summary_date"] != today:
-            conn.execute(
-                "UPDATE users SET daily_summary_count = 1, last_summary_date = ? WHERE id = ?",
-                (today, user_id),
-            )
-            return True, FREE_DAILY_SUMMARY_LIMIT - 1
-
-        current = user["daily_summary_count"]
-        if current >= FREE_DAILY_SUMMARY_LIMIT:
-            return False, 0
-
-        conn.execute(
-            "UPDATE users SET daily_summary_count = daily_summary_count + 1 WHERE id = ?",
-            (user_id,),
-        )
-        return True, FREE_DAILY_SUMMARY_LIMIT - current - 1
+    # [FREE_VERSION] 免费版：直接允许，返回无限
+    return True, -1  # -1 means unlimited
 
 
 def create_order(user_id: int, order_no: str, amount: int, currency: str = "cny", plan_type: str = "monthly") -> dict:

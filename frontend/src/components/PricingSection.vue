@@ -62,12 +62,10 @@
                 {{ item }}
               </li>
             </ul>
-            <button
-              @click="handleVipClick"
-              class="w-full h-11 rounded-full bg-white text-primary text-sm font-semibold hover:bg-white/90 transition-colors shadow-lg cursor-pointer"
-            >
-              {{ user?.is_vip ? '续费 VIP' : '立即开通 VIP' }}
-            </button>
+            <!-- [FREE_VERSION] 免费版：显示已解锁状态 -->
+            <div class="w-full h-11 rounded-full bg-white/20 text-white text-sm font-semibold flex items-center justify-center">
+              ✓ 已解锁全部功能
+            </div>
           </div>
         </div>
       </div>
@@ -82,11 +80,15 @@ const props = defineProps({
 
 const emit = defineEmits(['open-vip', 'need-login'])
 
+// [FREE_VERSION] 免费版：所有功能已解锁
 const freePlan = [
   '无限次视频下载',
   '支持 1800+ 平台',
   '基础视频信息解析',
-  `每日 3 次 AI 视频总结`,
+  '无限次 AI 视频总结',
+  'AI 思维导图生成',
+  'AI 视频问答',
+  '字幕下载与导出',
 ]
 
 const vipPlan = [

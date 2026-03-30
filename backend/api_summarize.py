@@ -28,19 +28,11 @@ class ChatRequest(BaseModel):
 def _check_summary_permission(user: dict | None):
     """
     检查 AI 总结权限。
-    未登录用户：不允许使用。
-    免费用户：每日限制次数。
-    VIP 用户：无限制。
+    [FREE_VERSION] 免费版：所有用户（包括未登录）无限制使用
     返回 (allowed, remaining, message)
     """
-    if not user:
-        return False, 0, "请先登录后使用 AI 总结功能"
-
-    allowed, remaining = check_and_increment_summary(user["id"])
-    if not allowed:
-        return False, 0, f"今日免费 AI 总结次数已用完（每日 {FREE_DAILY_SUMMARY_LIMIT} 次），开通 VIP 可无限使用"
-
-    return True, remaining, None
+    # [FREE_VERSION] 免费版：直接允许，无需登录
+    return True, -1, None
 
 
 def _get_summarizer():
